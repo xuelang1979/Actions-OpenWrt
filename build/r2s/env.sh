@@ -26,7 +26,7 @@ SET_ENV UseCache true
 SET_ENV AutoBuildTimeOut true
 
 SET_ENV MakeDownload true
-SET_ENV ClearPkg true
+SET_ENV ClearPkg false
 
 if [ -n "${envOverride}" ];then
     for env_ins in `tr ',' ' ' <<< $envOverride `;do

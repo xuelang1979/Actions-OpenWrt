@@ -80,7 +80,7 @@ jobs:
     outputs:
       imageBuilder: ${{ steps.organize.outputs.imageBuilder }}
       build_target: ${{ steps.organize.outputs.build_target }}
-    name: "编译 ${{matrix.repo.name}} for ${{matrix.target}} - config: ${{ github.event.inputs.config }}"
+    name: "编译 ${{matrix.repo.name}} - ${{matrix.repo.branch}} - ${{ github.event.inputs.config }}"
     strategy:
       fail-fast: false
       matrix:
