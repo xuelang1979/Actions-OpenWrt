@@ -45,7 +45,7 @@ EOF
 }
 
 function upload(){
-    if [ -n "${DOCKER_PASS}" ] && [ -z "${NOT_PUSH}" ];then
+    if [ -z "${NOT_PUSH}" ];then
         upload_dockerhub $1
     fi    
 }

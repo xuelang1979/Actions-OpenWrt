@@ -85,7 +85,7 @@ function init_d_stop(){
 # 从 ghproxy 下载
 function registry_api_setting(){
     local target=$1 realm service scope url
-    curl -L https://${repo_domain}/v2/${repo_namespace}/${target}/tags/list -v 2>&1 | awk '/Www-Authenticate/{print $4}' | sed 's/,/\n/g' > /tmp/registr_realm
+    curl -L https://${repo_domain}/v2/${repo_namespace}/${target}/tags/list -v 2>&1 |  awk 'tolower($2)~"www-authenticate"{print $4}' | sed 's/,/\n/g' > /tmp/registr_realm
     source /tmp/registr_realm
     url="${realm}?service=${service}&scope=${scope}"
     # https://stackoverflow.com/questions/35018899/using-curl-in-a-bash-script-and-getting-curl-3-illegal-characters-found-in-ur
@@ -138,6 +138,15 @@ function r2s(){
     tmp_mountpoint_end_size=2600MB
     first_grow_condition_size=1800
     blob_layer_reg_str=r2s
+    # [ ! -d /sys/block/$block_device ] && block_device='mmcblk1'
+    update
+}
+
+function r4s(){
+    part_prefix=p
+    tmp_mountpoint_end_size=2600MB
+    first_grow_condition_size=1800
+    blob_layer_reg_str=r4s
     # [ ! -d /sys/block/$block_device ] && block_device='mmcblk1'
     update
 }
@@ -223,9 +232,9 @@ function update(){
         # lede immortalwrt openwrt 的 os-release 都包含 lede，非 lede 判断放后面
         #grep -qw 'immortalwrt' /etc/os-release && REPO=immortalwrt
         # lede 的 /etc/openwrt_release 里 DISTRIB_REVISION 是大 R 开头，openwrt 里是小 r 开头
-        #if [ "$REPO" != 'immortalwrt' ] &&  grep -Eq "DISTRIB_REVISION='r" /etc/openwrt_release;then
-        #    REPO=openwrt
-        #fi
+        if [ "$REPO" != 'immortalwrt' ] &&  grep -Eq "DISTRIB_REVISION='r" /etc/openwrt_release;then
+           REPO=openwrt
+        fi
 
         if [ "${TEST}" != false ];then
             IMG_TAG=latest-${FSTYPE}${VER}-${REPO}-${IM_BRANCH}
@@ -536,6 +545,8 @@ function main(){
     proceed_command curl
     proceed_command wget
     proceed_command lsblk
+    # TODO ,自带的 dd 不行
+    # proceed_command dd coreutils-dd
 
     $board_id
 }

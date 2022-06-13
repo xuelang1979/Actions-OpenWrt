@@ -31,7 +31,7 @@ on:
         required: false
         default: 'config.buildinfo'
       os:
-        description: 'os to use'
+        description: 'os to use, or self-hosted'
         required: false
         default: 'ubuntu-20.04'
 
@@ -46,7 +46,8 @@ env:
   UPLOAD_WETRANSFER: false
   UPLOAD_RELEASE: false
   TZ: Asia/Shanghai
-  DOCKER_PASS: ${{ secrets.DOCKER_PASS }}
+  # DOCKER_HUB_PASS: ${{ secrets.DOCKER_PASS }}
+  # ALIUNCS_PASS: ${{ secrets.DOCKER_PASS }}
   NOT_PUSH: ${{ secrets.NOT_PUSH }}
   envOverride: ${{ github.event.inputs.envOverride }}
 
@@ -94,44 +95,54 @@ jobs:
     # - name: install docker
     #   uses: docker-practice/actions-setup-docker@master
       
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      env:
-        DOCKER_PASS: ${{ secrets.DOCKER_PASS  }}
-      if: env.DOCKER_PASS != ''
-      with:
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.DOCKER_PASS }}
+    # - name: Login to Docker Hub
+    #   uses: docker/login-action@v2
+    #   env:
+    #     DOCKER_PASS: ${{ secrets.DOCKER_HUB_PASS  }}
+    #   if: env.DOCKER_PASS != ''
+    #   with:
+    #     username: ${{ github.repository_owner }}
+    #     password: ${{ secrets.DOCKER_HUB_PASS }}
 
     # - name: Login to registry.aliyuncs.com
     #   uses: aliyun/acr-login@v1
     #   env:
-    #     DOCKER_PASS: ${{ secrets.DOCKER_PASS  }}
+    #     DOCKER_PASS: ${{ secrets.ALIUNCS_PASS  }}
     #   if: env.DOCKER_PASS != ''
     #   with:
     #     login-server: https://registry.aliyuncs.com
     #     username: "${{ github.repository_owner }}@qq.com"
-    #     password: "${{ secrets.DOCKER_PASS }}"
+    #     password: "${{ secrets.ALIUNCS_PASS }}"
 
     - name: prinf machine info and matrix info
       run: |
         uname -a
+        cat /etc/os-release
         df -h
         lscpu
         free -h
         echo 'target: ${{ matrix.target }} ${{ toJSON(matrix.repo) }}'
         # 移动 $target ，后续步骤不记得不需要用 build/${{ github.event.inputs.target }}
         mv build/${{ github.event.inputs.target }}/* ${GITHUB_WORKSPACE}/
-        \cp ${GITHUB_WORKSPACE}/build/*.buildinfo ${GITHUB_WORKSPACE}/
 
-        if [ ${GITHUB_REF##*/} = 'test' ] && [ "$(lscpu | awk '$1=="CPU"&&$2=="MHz:"{print int($3)}')" -le 2500 ];then
-          hour_num=$(TZ=Asia/Shanghai date '+%H')
-          # 白天频率太小不执行
-          if [ "${{ github.repository_owner }}" = zhangguanzhang ] && [ $hour_num -ge 9 ];then
-            echo "cpu 频率太小，不执行"
-            exit 233
+        echo "build_target=${{ github.event.inputs.target }}" >> $GITHUB_ENV
+
+        \cp ${GITHUB_WORKSPACE}/build/*.buildinfo ${GITHUB_WORKSPACE}/
+        if [ "${{ github.event.inputs.os }}" != 'self-hosted' ];then
+          if [ "${GITHUB_REF##*/}" = 'test' ] && [ "$(LANG=en_US.UTF-8 lscpu | awk '$1=="CPU"&&$2=="MHz:"{print int($3)}')" -le 2500 ];then
+            hour_num=$(TZ=Asia/Shanghai date '+%H')
+            # TODO
+            # 白天频率太小不执行
+            if [ "${{ github.repository_owner }}" = zhangguanzhang ] && [ $hour_num -ge 9 ];then
+              # 多个 matrix repo 编译无视频率
+              if ! grep -Pq '^\s*[^#]+?\},\{' ${GITHUB_WORKSPACE}/set_matrix.sh;then
+                echo "cpu 频率太小，不执行"
+                exit 233
+              fi
+            fi
           fi
         fi
+
     - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -145,12 +156,16 @@ jobs:
         if [ -f "init_runner.sh" ];then
             bash init_runner.sh
         else
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
             sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          if [ "${{ github.event.inputs.os }}" != 'self-hosted' ];then
+            sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          fi
           sudo -E apt-get -qq update
-          sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2004) zstd upx jq pv ccache gh
+          #sudo apt-cache search lib32gcc1
+          sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2004 | sed -r 's/lib32gcc1\S*//') \
+              zstd upx jq pv ccache gh $(sudo apt-cache search lib32gcc1 | awk 'NR==1{if($1=="lib32gcc1"){print $1}else{print "lib32gcc-s1"}}')
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
@@ -209,7 +224,9 @@ jobs:
             bash ${GITHUB_WORKSPACE}/clone.sh
         else
             if [ -d 'openwrt/.git' ]; then
-              cd openwrt && rm -f zerospace && git config --local user.email "action@github.com" && git config --local user.name "GitHub Action"
+              cd openwrt
+              rm -f zerospace
+              git config --local user.email "action@github.com" && git config --local user.name "GitHub Action"
               git fetch && git reset --hard origin/${{ matrix.repo.branch }} && git clean -df
             else
               sudo chown $USER:$(id -gn) openwrt && git clone -b ${{ matrix.repo.branch }} --single-branch ${{ matrix.repo.addr }} openwrt
@@ -217,7 +234,9 @@ jobs:
             ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
             echo "BaseDir=/workdir/openwrt" >> $GITHUB_ENV
         fi
-
+        if [ "${{ github.event.inputs.os }}" == 'self-hosted' ];then
+          sudo chown -R $USER:$(id -gn) /workdir/openwrt 
+        fi
         cd ${BaseDir}
         readlink -f $GITHUB_WORKSPACE/openwrt
         ls -l . $GITHUB_WORKSPACE/ $GITHUB_WORKSPACE/openwrt/
@@ -297,7 +316,9 @@ jobs:
                 # hack imageBuilder 构建出来带 *.buildinfo 和 files/
                 sed -ri ${sed_num}'{s#cp#& -a $(TOPDIR)/files $(TOPDIR)/*.buildinfo#;s#.config$##;}' target/imagebuilder/Makefile
 
-                if [ "${{ matrix.repo.name }}" == lede ] || [ "${{ matrix.repo.name }}" == immortalwrt ];then
+                #if [ "${{ matrix.repo.name }}" == lede ] || [ "${{ matrix.repo.name }}" == immortalwrt ];then
+                # 可能
+                if true;then
                   find package/ -type d -name luci-app-* | awk -F/ '{printf "CONFIG_PACKAGE_%s=m\n",$NF}' | sort >> .config
                   # TODO 查找更多的 app 包，但是不知道容量能撑住不 find  -type d -name luci-app-* | awk -F/ '!a[$NF]++{print $NF}'
                   # find -type d -name luci-app-* | awk -F/ '!a[$NF]++{printf "CONFIG_PACKAGE_%s=m\n",$NF}'| sort >> .config
@@ -459,26 +480,31 @@ jobs:
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        cd $(dirname $(find openwrt/bin/targets/ -type d -name packages ))
-        pwd
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        # 有固件生成，则上传
-        if [ `find -type f -size +5M | grep -Ev 'openwrt-imagebuilder' |wc -l` -ne 0 ];then
-          echo "::set-output name=status::success"
-        fi
 
-        # 下面 outputs 是后面上传 imageBuidler 的判断条件和名字
-        if ls *-imagebuilder-* &>/dev/null;then
-          # # 避免以后其他的 repo 构建的默认就带 imagebuilder，例如 sft1200。上传 imageBuilder 但是不给后续的 slim/full 执行
-          echo "::set-output name=uploadImageBuilder::true"
-          if [ "$USED_CONFIG_IB" == true ];then
-              echo "::set-output name=imageBuilder::openwrt-imagebuilder-${{ env.DEVICE_NAME }}-${{ matrix.repo.name }}-${{ matrix.repo.branch }}"
+        sha256_path=$(find openwrt/bin/targets/ -type f -name sha256sums )
+        if [ -n "$sha256_path" ];then
+          cd $(dirname $sha256_path)
+          pwd
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          # 有固件生成，则上传
+          if [ `find -type f -size +5M | grep -Ev 'openwrt-imagebuilder' |wc -l` -ne 0 ];then
+            echo "::set-output name=status::success"
+            echo "success build"
           fi
-        else
-          echo "no_imageBuilder=true" >> $GITHUB_ENV
+
+          # 下面 outputs 是后面上传 imageBuidler 的判断条件和名字
+          if ls *-imagebuilder-* &>/dev/null;then
+            # # 避免以后其他的 repo 构建的默认就带 imagebuilder，例如 sft1200。上传 imageBuilder 但是不给后续的 slim/full 执行
+            echo "::set-output name=uploadImageBuilder::true"
+            if [ "$USED_CONFIG_IB" == true ];then
+                echo "::set-output name=imageBuilder::openwrt-imagebuilder-${{ env.DEVICE_NAME }}-${{ matrix.repo.name }}-${{ matrix.repo.branch }}"
+            fi
+          else
+            echo "no_imageBuilder=true" >> $GITHUB_ENV
+          fi
+          echo "::set-output name=build_target::${{ matrix.target }}"
         fi
-        echo "::set-output name=build_target::${{ matrix.target }}"
 
     - name: Do something after Compile
       if: steps.organize.outputs.status == 'success' && !cancelled()
@@ -611,6 +637,9 @@ jobs:
           gh release -R ${GITHUB_REPOSITORY} view cache  2>/dev/null | grep -Po "asset:\s+\K${cache_name}.img.zst.\d+" | \
               xargs -r -n1 gh release -R ${GITHUB_REPOSITORY} delete-asset cache  -y
           gh release -R ${GITHUB_REPOSITORY} upload cache ${cache_name}.img.zst.* --clobber
+          if [ "${{ github.event.inputs.os }}" = 'self-hosted' ];then
+            gh auth logout 
+          fi
         fi
 
     - name: Delete workflow runs
@@ -660,7 +689,9 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        if [ "${{ github.event.inputs.os }}" != 'self-hosted' ];then
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        fi
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
           sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
@@ -684,22 +715,22 @@ jobs:
     - name: Login to Docker Hub
       uses: docker/login-action@v2
       env:
-        DOCKER_PASS: ${{ secrets.DOCKER_PASS  }}
+        DOCKER_PASS: ${{ secrets.DOCKER_HUB_PASS  }}
       if: env.DOCKER_PASS != ''
       with:
         username: ${{ github.repository_owner }}
-        password: ${{ secrets.DOCKER_PASS }}
+        password: ${{ secrets.DOCKER_HUB_PASS }}
 
     - name: Login to registry.aliyuncs.com
       uses: aliyun/acr-login@v1
       env:
-        DOCKER_PASS: ${{ secrets.DOCKER_PASS  }}
+        DOCKER_PASS: ${{ secrets.ALIUNCS_PASS  }}
       if: env.DOCKER_PASS != ''
       continue-on-error: true
       with:
         login-server: https://registry.aliyuncs.com
         username: "${{ github.repository_owner }}@qq.com"
-        password: "${{ secrets.DOCKER_PASS }}"
+        password: "${{ secrets.ALIUNCS_PASS }}"
 
     - name: Download imagebuilder (Artifact)
       uses: actions/download-artifact@v2
@@ -737,7 +768,7 @@ jobs:
 
         extra_pkgs=" -luci-app-ssr-plus -luci-app-samba"
         if [ "${{matrix.target}}" == 'slim' ];then
-          extra_pkgs+=' -luci-app-docker'
+          extra_pkgs+=' -luci-app-docker '
           PACKAGES=$( grep -Po '^CONFIG_PACKAGE_\K[^A-Z=]+' common.buildinfo | tr '\n' ' ' )
         else
           PACKAGES=$( grep -Po '^CONFIG_PACKAGE_\K[^A-Z=]+(?==y)' full.buildinfo | xargs -n1 -i grep -o {} package.list | awk '!a[$0]++' | xargs echo )
@@ -800,6 +831,9 @@ jobs:
         mv sha256sums ${{ matrix.repo.name }}-${{ matrix.repo.branch }}-${{ needs.build.outputs.build_target }}${suffix}-sha256sums
         [ -f profiles.json ] && mv profiles.json ${{ matrix.repo.name }}-${{ matrix.repo.branch }}-${{ needs.build.outputs.build_target }}${suffix}-profiles.json
         ls -l
-        [ ${GITHUB_REF##*/} = 'main' ] && tag=latest || tag=test
+        [ "${GITHUB_REF##*/}" = 'main' ] && tag=latest || tag=test
         gh release -R ${GITHUB_REPOSITORY} list | grep -Ew ${tag} || gh release -R ${GITHUB_REPOSITORY} create ${tag} -t '' -n ''
         gh release -R ${GITHUB_REPOSITORY} upload ${tag} * --clobber
+        if [ "${{ github.event.inputs.os }}" = 'self-hosted' ];then
+          gh auth logout 
+        fi
